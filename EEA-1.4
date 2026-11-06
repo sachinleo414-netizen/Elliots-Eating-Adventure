@@ -1,0 +1,806 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Elliot's Eating Adventure</title>
+
+<style>
+* { box-sizing:border-box; }
+
+body {
+ margin:0;
+ overflow:hidden;
+ background:#87ceeb;
+ font-family:Arial,sans-serif;
+}
+
+canvas { display:block; }
+
+#hud {
+ position:fixed;
+ top:15px;
+ left:15px;
+ color:white;
+ font-size:22px;
+ font-weight:bold;
+ background:#222b;
+ padding:14px 20px;
+ border:3px solid white;
+ border-radius:14px;
+ text-shadow:2px 2px #000;
+ pointer-events:none;
+}
+
+#help {
+ position:fixed;
+ bottom:12px;
+ left:50%;
+ transform:translateX(-50%);
+ background:#222c;
+ color:white;
+ padding:10px 18px;
+ border-radius:12px;
+ text-align:center;
+ font-size:14px;
+ white-space:nowrap;
+}
+
+#message {
+ position:fixed;
+ top:100px;
+ left:50%;
+ transform:translateX(-50%);
+ color:#fff;
+ font-size:28px;
+ font-weight:bold;
+ text-shadow:3px 3px #333;
+ pointer-events:none;
+}
+
+#restartScreen {
+ display:none;
+ position:fixed;
+ top:60%;
+ left:50%;
+ transform:translate(-50%,-50%);
+ z-index:10;
+}
+
+#restartScreen button {
+ padding:18px 38px;
+ font-size:25px;
+ font-weight:bold;
+ background:#39c957;
+ color:white;
+ border:4px solid white;
+ border-radius:15px;
+ cursor:pointer;
+}
+</style>
+</head>
+
+<body>
+
+<div id="restartScreen">
+ <button onclick="restartGame()">🔄 RESTART GAME</button>
+</div>
+
+<div id="hud">
+ 🍔 HAMBURGERS: <span id="score">0</span><br>
+ ❤️ HEALTH: <span id="health">1</span> HP<br>
+ 💨 FART POWER: <span id="power">0</span>
+</div>
+
+<div id="message">FIND THE HAMBURGERS!</div>
+
+<div id="help">
+ A/D or ←/→ Move | SPACE Jump | Explore the world!
+</div>
+
+<canvas id="game"></canvas>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+
+const scoreEl=document.getElementById("score");
+const powerEl=document.getElementById("power");
+const message=document.getElementById("message");
+
+canvas.width=innerWidth;
+canvas.height=innerHeight;
+
+onresize=()=>{
+ canvas.width=innerWidth;
+ canvas.height=innerHeight;
+};
+
+const WORLD=7000;
+const keys={};
+let score=0;
+
+let health=1;
+let maxHealth=10;
+let invincible=false;
+let damageTimer=0;
+
+function updateHealthUI(){
+ document.getElementById("health").textContent=
+ Math.floor(health);
+}
+
+function takeDamage(){
+ if(invincible || health<=0)return;
+
+ health=Math.max(0,health-1);
+ invincible=true;
+ damageTimer=90;
+
+ updateHealthUI();
+
+ message.textContent=health<=0
+ ? "GAME OVER! ELLIOT HAS FALLEN!"
+ : "OUCH! -1 HP!";
+
+ messageTimer=90;
+
+ if(health<=0){
+  gameOver=true;
+ }
+}
+
+let gameOver=false;
+let camera=0;
+let particles=[];
+let burps=[];
+let fartCooldown=0;
+let messageTimer=0;
+
+onkeydown=e=>{
+ keys[e.code]=true;
+ if(["Space","ArrowUp","ArrowDown"].includes(e.code))
+ e.preventDefault();
+};
+
+onkeyup=e=>keys[e.code]=false;
+
+const player={
+ x:150,y:300,w:48,h:65,
+ vx:0,vy:0,speed:5,
+ grounded:false,
+ facing:1
+};
+
+// TERRAIN
+
+let platforms=[
+{x:0,y:510,w:900,h:150},
+{x:980,y:460,w:600,h:200},
+{x:1660,y:510,w:800,h:150},
+{x:2550,y:440,w:700,h:220},
+{x:3300,y:500,w:900,h:160},
+{x:4300,y:450,w:850,h:210},
+{x:5200,y:500,w:900,h:160},
+{x:6200,y:440,w:800,h:220}
+];
+
+for(let i=0;i<55;i++){
+ let x=300+i*120;
+ if(x>WORLD)break;
+
+ if(i%3===0)
+ platforms.push({
+  x,y:340-(i%4)*30,w:130,h:18
+ });
+}
+
+// HAMBURGERS
+
+let burgers=[];
+
+for(let i=0;i<85;i++){
+ let x=220+i*78;
+ if(x>WORLD-100)break;
+
+ let platform=platforms.find(p=>
+  x>p.x&&x<p.x+p.w
+ );
+
+ let y=platform?platform.y-38:400;
+
+ burgers.push({
+  x,y,got:false,bob:Math.random()*6
+ });
+}
+
+// CLOUDS
+
+let clouds=Array.from({length:35},(_,i)=>({
+ x:i*230,
+ y:50+Math.random()*150,
+ size:25+Math.random()*35
+}));
+
+// ENEMIES
+
+let enemies=[];
+
+for(let i=0;i<18;i++){
+ let x=550+i*350;
+
+ let platform=platforms.find(p=>
+  x>p.x&&x<p.x+p.w
+ );
+
+ if(platform){
+  enemies.push({
+   x:x,
+   y:platform.y-42,
+   w:38,
+   h:42,
+   vx:1.5,
+   alive:true,
+   direction:1,
+   speed:1.5
+  });
+ }
+}
+
+function updateEnemies(){
+ enemies.forEach(e=>{
+  if(!e.alive)return;
+
+  let platform=platforms.find(p=>
+   e.x+e.w>p.x &&
+   e.x<p.x+p.w &&
+   Math.abs((e.y+e.h)-p.y)<5
+  );
+
+  if(Math.abs(player.x-e.x)<180){
+   e.vx=player.x<e.x?-2.3:2.3;
+  }else{
+   e.vx=e.direction*e.speed;
+  }
+
+  if(
+   player.x+player.w>e.x &&
+   player.x<e.x+e.w &&
+   player.y+player.h>e.y &&
+   player.y<e.y+e.h
+  ){
+   if(player.vy>2 && player.y+player.h<e.y+22){
+    e.alive=false;
+    player.vy=-10;
+    score+=5;
+    scoreEl.textContent=score;
+
+    message.textContent="INSTRUCTOR DEFEATED! +5";
+    messageTimer=80;
+   }else if(!invincible){
+    takeDamage();
+    player.vx=player.x<e.x?-9:9;
+    player.vy=-7;
+   }
+  }
+
+  e.x+=e.vx;
+
+  if(platform){
+   if(e.x<platform.x ||
+      e.x+e.w>platform.x+platform.w){
+    e.direction*=-1;
+    e.x+=e.direction*5;
+   }
+  }
+ });
+}
+
+// FART
+
+function fart(){
+ for(let i=0;i<24;i++){
+  particles.push({
+   x:player.x+player.w/2-player.facing*15,
+   y:player.y+player.h-10,
+   vx:-player.facing*(Math.random()*5+2),
+   vy:(Math.random()-.5)*5,
+   life:40+Math.random()*20,
+   size:5+Math.random()*15
+  });
+ }
+
+ message.textContent="💨 BRRRRRAAAPPP!!! 💨";
+ messageTimer=15;
+}
+
+function collectBurger(b){
+ b.got=true;
+ score++;
+
+ health=Math.min(maxHealth,health+0.1);
+
+ scoreEl.textContent=score;
+ powerEl.textContent=score;
+
+ updateHealthUI();
+ fart();
+}
+
+// UPDATE
+
+function update(){
+ if(gameOver)return;
+
+ let moving=0;
+
+ if(keys.ArrowLeft||keys.KeyA)moving=-1;
+ if(keys.ArrowRight||keys.KeyD)moving=1;
+
+ player.vx=moving*player.speed;
+
+ if(moving)player.facing=moving;
+
+ if((keys.Space||keys.ArrowUp||keys.KeyW)&&player.grounded){
+  player.vy=-13;
+  player.grounded=false;
+ }
+
+ if(damageTimer>0){
+  damageTimer--;
+  if(damageTimer===0)invincible=false;
+ }
+
+ player.vy+=0.65;
+ player.x+=player.vx;
+ player.y+=player.vy;
+
+ player.x=Math.max(0,Math.min(WORLD-player.w,player.x));
+
+ player.grounded=false;
+
+ for(let p of platforms){
+  if(
+   player.x+player.w>p.x &&
+   player.x<p.x+p.w &&
+   player.y+player.h>p.y &&
+   player.y+player.h<p.y+25 &&
+   player.vy>=0
+  ){
+   player.y=p.y-player.h;
+   player.vy=0;
+   player.grounded=true;
+  }
+ }
+
+ if(player.y>canvas.height+300){
+  player.x=Math.max(50,player.x-150);
+  player.y=250;
+  player.vy=0;
+ }
+
+ for(let b of burgers){
+  if(!b.got &&
+   player.x+player.w>b.x-12 &&
+   player.x<b.x+30 &&
+   player.y+player.h>b.y-10 &&
+   player.y<b.y+35
+  ){
+   collectBurger(b);
+  }
+ }
+
+ for(let p of particles){
+  p.x+=p.vx;
+  p.y+=p.vy;
+  p.life--;
+  p.size*=0.99;
+ }
+
+ particles=particles.filter(p=>p.life>0);
+
+ camera=player.x-canvas.width*.35;
+ camera=Math.max(0,Math.min(WORLD-canvas.width,camera));
+
+ if(messageTimer>0){
+  messageTimer--;
+  if(messageTimer===0)
+   message.textContent="FIND MORE HAMBURGERS!";
+ }
+}
+
+// CLOUD DRAWING
+
+function drawCloud(x,y,s){
+ ctx.fillStyle="white";
+ ctx.beginPath();
+ ctx.arc(x,y,s*.5,0,Math.PI*2);
+ ctx.arc(x+s*.5,y-s*.2,s*.65,0,Math.PI*2);
+ ctx.arc(x+s,y,s*.5,0,Math.PI*2);
+ ctx.fill();
+}
+
+// RESTART
+
+function restartGame(){
+ score=0;
+ health=1;
+ gameOver=false;
+
+ player.x=150;
+ player.y=300;
+ player.vx=0;
+ player.vy=0;
+ player.grounded=false;
+
+ camera=0;
+ particles=[];
+ messageTimer=0;
+ invincible=false;
+ damageTimer=0;
+
+ burgers.forEach(b=>b.got=false);
+
+ enemies.forEach(e=>{
+  e.alive=true;
+ });
+
+ scoreEl.textContent=0;
+ powerEl.textContent=0;
+ updateHealthUI();
+
+ document.getElementById("restartScreen").style.display="none";
+ message.textContent="FIND THE HAMBURGERS!";
+}
+
+// IMPROVED DRAW FUNCTION
+
+function draw(){
+ const w=canvas.width;
+ const h=canvas.height;
+
+ ctx.clearRect(0,0,w,h);
+
+ // SKY
+ let sky=ctx.createLinearGradient(0,0,0,h);
+ sky.addColorStop(0,"#36a9f5");
+ sky.addColorStop(.65,"#9de5ff");
+ sky.addColorStop(1,"#e8faff");
+
+ ctx.fillStyle=sky;
+ ctx.fillRect(0,0,w,h);
+
+ // SUN
+ ctx.save();
+ ctx.shadowColor="#fff176";
+ ctx.shadowBlur=40;
+ ctx.fillStyle="#fff176";
+ ctx.beginPath();
+ ctx.arc(w-100,100,45,0,Math.PI*2);
+ ctx.fill();
+ ctx.restore();
+
+ ctx.save();
+ ctx.translate(-camera,0);
+
+ // CLOUDS
+ for(let c of clouds){
+  drawCloud(c.x,c.y,c.size);
+ }
+
+ // HILLS
+ for(let i=0;i<16;i++){
+  ctx.fillStyle=i%2?"#83d58b":"#a1e5a0";
+  ctx.beginPath();
+  ctx.arc(i*500,520,230,Math.PI,0);
+  ctx.fill();
+ }
+
+ // PLATFORMS
+ for(let p of platforms){
+  let dirt=ctx.createLinearGradient(0,p.y,0,p.y+p.h);
+  dirt.addColorStop(0,"#a86b3e");
+  dirt.addColorStop(1,"#63371f");
+
+  ctx.fillStyle=dirt;
+  ctx.fillRect(p.x,p.y,p.w,p.h);
+
+  let grass=ctx.createLinearGradient(0,p.y,0,p.y+15);
+  grass.addColorStop(0,"#6bea65");
+  grass.addColorStop(1,"#239c42");
+
+  ctx.fillStyle=grass;
+  ctx.fillRect(p.x,p.y,p.w,15);
+
+  ctx.fillStyle="#178d39";
+
+  for(let i=0;i<p.w;i+=30){
+   ctx.fillRect(p.x+i,p.y+15,18,4);
+  }
+
+  ctx.fillStyle="#c18a5c";
+
+  for(let i=35;i<p.w;i+=100){
+   ctx.beginPath();
+   ctx.arc(p.x+i,p.y+55,4,0,Math.PI*2);
+   ctx.fill();
+  }
+ }
+
+ // TREES
+ for(let i=0;i<55;i++){
+  let x=i*135+60;
+
+  let ground=platforms.find(p=>
+   x>p.x&&x<p.x+p.w
+  );
+
+  if(!ground)continue;
+
+  ctx.fillStyle="#754321";
+  ctx.fillRect(x-7,ground.y-65,14,65);
+
+  ctx.fillStyle="#137c37";
+  ctx.beginPath();
+  ctx.arc(x,ground.y-75,29,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="#27a94c";
+  ctx.beginPath();
+  ctx.arc(x-10,ground.y-85,17,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="#53c96a";
+  ctx.beginPath();
+  ctx.arc(x+10,ground.y-79,13,0,Math.PI*2);
+  ctx.fill();
+ }
+
+ // HAMBURGERS
+ for(let b of burgers){
+  if(b.got)continue;
+
+  let y=b.y+Math.sin(Date.now()/250+b.bob)*7;
+
+  ctx.save();
+  ctx.shadowColor="#ffdc42";
+  ctx.shadowBlur=15;
+  ctx.font="32px Arial";
+  ctx.textAlign="center";
+  ctx.fillText("🍔",b.x,y+25);
+  ctx.restore();
+ }
+
+ // DIET INSTRUCTORS
+ for(let e of enemies){
+  if(!e.alive)continue;
+
+  ctx.fillStyle="#0004";
+  ctx.beginPath();
+  ctx.ellipse(e.x+19,e.y+43,22,5,0,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="#26334a";
+  ctx.fillRect(e.x+7,e.y+33,10,12);
+  ctx.fillRect(e.x+23,e.y+33,10,12);
+
+  ctx.fillStyle="#fff";
+  ctx.beginPath();
+  ctx.roundRect(e.x+3,e.y+13,32,28,7);
+  ctx.fill();
+
+  ctx.fillStyle="#e63946";
+  ctx.beginPath();
+  ctx.moveTo(e.x+19,e.y+18);
+  ctx.lineTo(e.x+13,e.y+24);
+  ctx.lineTo(e.x+19,e.y+35);
+  ctx.lineTo(e.x+25,e.y+24);
+  ctx.fill();
+
+  ctx.fillStyle="#f0bd99";
+  ctx.beginPath();
+  ctx.arc(e.x+19,e.y+10,14,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="#493126";
+  ctx.beginPath();
+  ctx.roundRect(e.x+5,e.y-3,27,9,5);
+  ctx.fill();
+
+  ctx.fillStyle="#222";
+  ctx.fillRect(e.x+11,e.y+8,4,4);
+  ctx.fillRect(e.x+24,e.y+8,4,4);
+
+  ctx.fillStyle="#a66b37";
+  ctx.fillRect(e.x-8,e.y+23,12,18);
+
+  ctx.fillStyle="white";
+  ctx.font="bold 6px Arial";
+  ctx.fillText("DIET",e.x-7,e.y+34);
+ }
+
+ // PLAYER FLASH
+ if(invincible&&Math.floor(Date.now()/100)%2===0){
+  ctx.globalAlpha=.3;
+ }
+
+ // SHADOW
+ ctx.fillStyle="#0004";
+ ctx.beginPath();
+ ctx.ellipse(player.x+24,player.y+65,27,6,0,0,Math.PI*2);
+ ctx.fill();
+
+ // CHARACTER BOUNCE
+ let bounce=player.grounded
+  ?Math.sin(Date.now()/90)*1.5:0;
+
+ ctx.save();
+
+ if(player.facing===-1){
+  ctx.translate(player.x+player.w,0);
+  ctx.scale(-1,1);
+  ctx.translate(-player.x,0);
+ }
+
+ ctx.translate(0,bounce);
+
+ // LEGS
+ ctx.fillStyle="#f3b78d";
+ ctx.fillRect(player.x+12,player.y+52,9,12);
+ ctx.fillRect(player.x+29,player.y+52,9,12);
+
+ // SHOES
+ ctx.fillStyle="#e52b36";
+ ctx.beginPath();
+ ctx.roundRect(player.x+5,player.y+61,19,9,4);
+ ctx.roundRect(player.x+26,player.y+61,19,9,4);
+ ctx.fill();
+
+ // HOODIE
+ let hoodie=ctx.createLinearGradient(
+  player.x,player.y+29,
+  player.x,player.y+58
+ );
+
+ hoodie.addColorStop(0,"#37d86a");
+ hoodie.addColorStop(1,"#087c35");
+
+ ctx.fillStyle=hoodie;
+ ctx.beginPath();
+ ctx.roundRect(player.x+3,player.y+29,43,29,10);
+ ctx.fill();
+
+ // ZIP
+ ctx.strokeStyle="#a8ffc1";
+ ctx.lineWidth=2;
+ ctx.beginPath();
+ ctx.moveTo(player.x+24,player.y+34);
+ ctx.lineTo(player.x+24,player.y+53);
+ ctx.stroke();
+
+ // ARMS
+ ctx.fillStyle="#f3b78d";
+ ctx.beginPath();
+ ctx.roundRect(player.x-3,player.y+34,10,21,5);
+ ctx.roundRect(player.x+41,player.y+34,10,21,5);
+ ctx.fill();
+
+ // HEAD
+ ctx.fillStyle="#f3b78d";
+ ctx.beginPath();
+ ctx.roundRect(player.x+7,player.y+3,35,31,12);
+ ctx.fill();
+
+ // HAIR
+ ctx.fillStyle="#4b291a";
+ ctx.beginPath();
+ ctx.arc(player.x+24,player.y+10,18,Math.PI,Math.PI*2);
+ ctx.fill();
+
+ // EYES
+ ctx.fillStyle="white";
+ ctx.fillRect(player.x+15,player.y+16,8,8);
+ ctx.fillRect(player.x+29,player.y+16,8,8);
+
+ ctx.fillStyle="#222";
+ ctx.fillRect(player.x+18,player.y+18,4,5);
+ ctx.fillRect(player.x+32,player.y+18,4,5);
+
+ // SMILE
+ ctx.strokeStyle="#a84343";
+ ctx.lineWidth=2;
+ ctx.beginPath();
+ ctx.arc(player.x+25,player.y+25,7,.15,Math.PI-.15);
+ ctx.stroke();
+
+ ctx.restore();
+
+ ctx.globalAlpha=1;
+
+ // NAME
+ ctx.font="bold 15px Arial";
+ ctx.textAlign="center";
+ ctx.lineWidth=3;
+ ctx.strokeStyle="#222";
+ ctx.fillStyle="white";
+
+ ctx.strokeText("ELLIOT",player.x+24,player.y-8);
+ ctx.fillText("ELLIOT",player.x+24,player.y-8);
+
+ ctx.textAlign="left";
+
+ // FART PARTICLES
+ for(let p of particles){
+  ctx.globalAlpha=Math.max(0,p.life/60);
+
+  ctx.fillStyle="#9cdb47";
+  ctx.beginPath();
+  ctx.arc(p.x,p.y,p.size,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="#d9f59d";
+  ctx.beginPath();
+  ctx.arc(p.x-4,p.y-3,p.size*.4,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.globalAlpha=1;
+ }
+
+ ctx.restore();
+
+ // PROGRESS BAR
+ ctx.fillStyle="#2229";
+ ctx.fillRect(w-215,20,195,17);
+
+ ctx.fillStyle="#ffb52e";
+ ctx.fillRect(w-215,20,195*(player.x/WORLD),17);
+
+ ctx.strokeStyle="white";
+ ctx.lineWidth=2;
+ ctx.strokeRect(w-215,20,195,17);
+
+ // GAME OVER
+ if(gameOver){
+  ctx.fillStyle="rgba(0,0,0,0.8)";
+  ctx.fillRect(0,0,w,h);
+
+  ctx.textAlign="center";
+
+  ctx.fillStyle="#ff4444";
+  ctx.font="bold 65px Arial";
+  ctx.fillText("GAME OVER",w/2,h/2-70);
+
+  ctx.fillStyle="white";
+  ctx.font="25px Arial";
+
+  ctx.fillText(
+   "Elliot ran out of food!",
+   w/2,h/2-25
+  );
+
+  ctx.fillText(
+   "🍔 Hamburgers collected: "+score,
+   w/2,h/2+15
+  );
+
+  ctx.textAlign="left";
+
+  document.getElementById("restartScreen").style.display="block";
+ }
+}
+
+// GAME LOOP
+
+function loop(){
+ update();
+ updateEnemies();
+ draw();
+ requestAnimationFrame(loop);
+}
+
+loop();
+
+</script>
+</body>
+</html>
